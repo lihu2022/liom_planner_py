@@ -4,6 +4,8 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 from scipy.ndimage import binary_dilation
+from shapely import box
+from bitarray import bitarray
 
 
 
@@ -115,13 +117,77 @@ class Environment :
 
 
 
-    # def CheckBoxCillision(time, box):
+    def CheckBoxCillision(self, time, box):
+        for poly in self.polygons_:
+            if (poly.intersects(box)):
+                return True
+        return False
 
 
 
 
+    def GenerateCorridoeBox(self, time, x, y, radius):
+        ri = radius
 
-    # def GenerateCorridoeBox(time, x, y, radius):
+        bound = box(-ri, -ri, ri, ri)
+
+        if self.CheckBoxCillision(time, bound):
+            inc = 4
+            while inc < self.config_.corridor_max_iter:
+                iter = inc // 4
+                edge = inc % 4
+
+                real_x, real_y = x, y
+                if edge == 0:
+                    real_x -= iter * 0.05
+                elif edge == 1:
+                    real_x += iter * 0.05
+                elif edge == 2:
+                    real_y -= iter * 0.05
+                elif edge == 3:
+                    real_y += iter * 0.05
+
+                inc += 1
+                bound = box(real_x - ri, real_y - ri, real_x + ri, real_y + ri)
+                if not self.CheckBoxCillision(time, bound):
+                    break
+            else:
+                return False
+
+            x, y = real_x, real_y
+
+        inc = 4
+        
+        blocked = bitarray('0000')
+        incremental = [0.0] * 4
+        step = radius * 0.2
+
+        while not blocked.all() and inc < self.config_.corridor_max_iter:
+            iter = inc // 4
+            edge = inc % 4
+            inc += 1
+
+            if blocked[edge]:
+                continue
+
+            incremental[edge] = iter * step
+
+            test = box((-ri - incremental[0], -ri - incremental[2]),
+                        (ri + incremental[1], ri + incremental[3])).offset((x, y))
+
+            if self.CheckBoxCillision(time, test) or incremental[edge] >= self.config_.corridor_incremental_timeremental:
+                incremental[edge] -= step
+                blocked[edge] = True
+        else:
+            if inc > self.config_.corridor_max_iter:
+                return False
+
+        result = ((x - incremental[0], y - incremental[2]),
+                (x + incremental[1], y + incremental[3]))
+
+        return True
+
+
 
 
 

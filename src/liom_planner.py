@@ -1,6 +1,9 @@
 import math
 import environmental as Env
 import numpy as np
+from scipy.interpolate import interp1d
+import casadi as ca
+
 
 
 
@@ -17,9 +20,14 @@ class LiomPlanner():
         gears = [None] * length
         stations = [None] * length
         for i in range(length):
-            track_angle = math.atan2(path[i][2] - path[i - 1][1], path[i][0] - path[i][0])
-            gear = abs(self.NormalizeAngle(track_angle - path[i][2])) < (math.pi / 2)
-            gears[i] = 1 if gear else -1
+            if i == 0:
+                track_angle = path[i][1]
+                gears[i] = 1
+                stations[i] = 0
+                continue
+            track_angle = math.atan2(path[i][0][1] - path[i - 1][0][1], path[i][0][0] - path[i - 1][0][0])
+            gear = abs(self.NormalizeAngle(track_angle - path[i][1])) < (math.pi / 2)
+            gears[i] = 1 if gear else - 1
             stations[i] = stations[i - 1] + self.Disdance(path[i], path[i - 1])
         
         if (len(gears) > 1):
@@ -40,21 +48,60 @@ class LiomPlanner():
                 start_time = profile[-1]
                 last_idx = i
 
-        nfe = max(self.env_.Config.min_nfe, time_profile[-1] / self.env_.time_step)
+        nfe = max(self.env_.config_.min_nfe, math.floor(time_profile[-1] / self.env_.config_.time_step))
         interpolated_ticks = np.linspace(time_profile[0], time_profile[-1], nfe)
+
+        prev_x = [point[0][0] for point in path]
+        prev_y = [point[0][1] for point in path]
+        prev_theta = [point[1] for point in path]
+        
+        # 插值
+        interp_x = interp1d(time_profile, prev_x, kind='linear')(interpolated_ticks)
+        interp_y = interp1d(time_profile, prev_y, kind='linear')(interpolated_ticks)
+        assert len(prev_theta) == len(time_profile), "Time profile and path theta length must match"
+        interp_theta_func = interp1d(time_profile, prev_theta, kind='linear', fill_value="extrapolate")
+        interp_theta = np.unwrap(interp_theta_func(interpolated_ticks)) # 确保角度连续
+        
+        result_states = []
+        dt = interpolated_ticks[1] - interpolated_ticks[0]
+        
+        for i in range(nfe):
+            state = {'x': interp_x[i], 'y': interp_y[i], 'theta': interp_theta[i]}
+            result_states.append(state)
+        
+        for i in range(nfe - 1):
+            dx = result_states[i+1]['x'] - result_states[i]['x']
+            dy = result_states[i+1]['y'] - result_states[i]['y']
+            tracking_angle = np.arctan2(dy, dx)
+            gear = abs((tracking_angle - result_states[i]['theta']) % (2 * np.pi)) < np.pi / 2
+            velocity = np.hypot(dy, dx) / dt
+            
+            result_states[i]['v'] = np.clip(velocity if gear else -velocity, -self.env_.config_.max_velocity, self.env_.config_.max_velocity)
+            dtheta_dt = (result_states[i+1]['theta'] - result_states[i]['theta']) / dt
+            result_states[i]['phi'] = np.clip(np.arctan(dtheta_dt * self.env_.config_.paramera.wheel_base / result_states[i]['v']), -self.env_.config_.paramera.max_phi, self.env_.config_.paramera.max_phi)
+        
+        for i in range(nfe - 2):
+            result_states[i]['a'] = np.clip((result_states[i+1]['v'] - result_states[i]['v']) / dt, -self.env_.config_.max_acceleration, self.env_.config_.max_acceleration)
+            result_states[i]['omega'] = np.clip((result_states[i+1]['phi'] - result_states[i]['phi']) / dt, -self.env_.config_.paramera.max_omega, self.env_.config_.paramera.max_omega)
+        
+        result = {'tf': interpolated_ticks[-1], 'states': result_states}
+        
+        return result
+
         
         
 
             
 
 
-    def Disdance(p1, p2):
-        return math.sqrt((p1[1] - p2[1])**2, (p1[0] - p2[0]))
+    def Disdance(self, p1, p2):
+        value = math.sqrt((p1[0][0] - p2[0][0]) ** 2 + (p1[0][1] - p2[0][1]) ** 2)
+        return value
     
     def generate_optimal_time_profile_segment(self, stations, start_time):
         # 初始化变量
-        max_decel = -self.env_.Config.max_acceleration
-        min_velocity = -self.env_.Config.max_velocity
+        max_decel = -self.env_.config_.max_acceleration
+        min_velocity = -self.env_.config_.max_velocity
 
         # 加速相
         accel_idx = 0
@@ -64,10 +111,10 @@ class LiomPlanner():
             ds = stations[i+1] - stations[i]
 
             profile[i] = vi
-            vi = math.sqrt(vi**2 + 2 * self.env_.Config.max_acceleration * ds)
-            vi = min(self.env_.Config.max_velocity, max(min_velocity, vi))
+            vi = math.sqrt(vi**2 + 2 * self.env_.config_.max_acceleration * ds)
+            vi = min(self.env_.config_.max_velocity, max(min_velocity, vi))
 
-            if vi >= self.env_.Config.max_velocity:
+            if vi >= self.env_.config_.max_velocity:
                 accel_idx = i + 1
                 break
 
@@ -79,15 +126,15 @@ class LiomPlanner():
 
             profile[i] = vi
             vi = math.sqrt(vi**2 - 2 * max_decel * ds)
-            vi = min(self.env_.Config.max_velocity, max(min_velocity, vi))
+            vi = min(self.env_.config_.max_velocity, max(min_velocity, vi))
 
-            if vi >= self.env_.Config.max_velocity:
+            if vi >= self.env_.config_.max_velocity:
                 decel_idx = i
                 break
 
         # 填充色剖面
         for i in range(accel_idx, decel_idx):
-            profile[i] = self.env_.Config.max_velocity
+            profile[i] = self.env_.config_.max_velocity
 
         # 生成时间剖面
         time_profile = [start_time for _ in stations]
@@ -104,7 +151,7 @@ class LiomPlanner():
 
 
 
-    def NormalizeAngle(angle):
+    def NormalizeAngle(self, angle):
     # 对角度进行正规化调整到[0, 2*pi)
         a = math.fmod(angle + math.pi, 2.0 * math.pi)
     # 如果计算结果为负值，调整到[0, 2*pi)的范围
@@ -122,6 +169,8 @@ class LiomPlanner():
     
 
     def Plan(self):
+        guess = self.GetGuessFromOripath()
+
 
         pass
 

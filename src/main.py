@@ -1,10 +1,12 @@
 from coarse_path_search import Astar
-# from liom_planner import LiomPlanner
+from liom_planner import LiomPlanner
 from config import Config
 from environmental import Environment
 import matplotlib.pyplot as plt
 from path_finding_lib import PathFinding
 import math 
+
+
 
 def main():
     start = (75, -75)
@@ -37,7 +39,7 @@ def main():
     plot_path(path_xytheta)
 
 
-    liom_planner = LiomPlanner()
+    liom_planner = LiomPlanner(path_xytheta, env)
     if (liom_planner.Plan()):
         print("opmization success!!")
     else:

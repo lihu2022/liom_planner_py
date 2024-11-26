@@ -108,6 +108,9 @@ class Config :
     opti_w_omega = 1.0
     opti_w_inner_iter_max = 100
     opti_w_penalty0 = 1e4
+    opti_w_jerk = 1.0
+    opti_w_infeasibility = 0.1
+    
 
     #vehicle limit
     max_acceleration = 3

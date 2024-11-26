@@ -3,3 +3,5 @@
 *.venv
 config/
 launch/
+__pycache__/
+*.pyc
